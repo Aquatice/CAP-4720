@@ -1,0 +1,702 @@
+<html>
+<!-- 
+		   Francisco Samuel Rios
+	COP 4720 - Assignment 4 Board Game
+			 November 1, 2015
+-->
+<head>
+	<script src="libs/three.js"></script>
+	<script src="loaders/OBJLoader.js"></script>
+	<script src="loaders/OBJMTLLoader.js"></script>
+	<script src="loaders/DDSLoader.js"></script>
+	<script src="loaders/MTLLoader.js"></script>
+	
+<!-- WEBWORKER SCRIPT BEGINS HERE -->
+<script id="worker" type="javascript/worker">
+var StartBoardPieces = 
+[
+ 1, 0, 1, 0, 1, 0, 1, 0,
+ 0, 1, 0, 1, 0, 1, 0, 1,
+ 1, 0, 1, 0, 1, 0, 1, 0,
+ 0, 0, 0, 0, 0, 0, 0, 0,
+ 0, 0, 0, 0, 0, 0, 0, 0,
+ 0, 1, 0, 1, 0, 1, 0, 1,
+ 1, 0, 1, 0, 1, 0, 1, 0,
+ 0, 1, 0, 1, 0, 1, 0, 1
+];
+
+var StartBoardColors =
+[
+ 1, -1, 1, -1, 1, -1, 1, -1,
+ -1, 1, -1, 1, -1, 1, -1, 1,
+ 1, -1, 1, -1, 1, -1, 1, -1,
+ -1, -1, -1, -1, -1, -1, -1, -1,
+ -1, -1, -1, -1, -1, -1, -1, -1,
+ -1, 0, -1, 0, -1, 0, -1, 0,
+ 0, -1, 0, -1, 0, -1, 0, -1, 
+ -1, 0, -1, 0, -1, 0, -1, 0
+];
+
+var removeArray =  [0, // Remove up-left 
+					0, // Remove up-right
+					0, // Remove down-left
+					0]; // Remove down-right
+
+var BoardColors, BoardPieces;
+var movelist = [];
+
+	// Initialize the game, just what it says on the tag
+	function initGame()
+	{
+		BoardColors = new Array(64);
+		BoardPieces = new Array(64);
+		
+		for(var i = 0; i<64; i++)
+		{
+			BoardColors[i] = StartBoardColors[i]
+			BoardPieces[i] = StartBoardPieces[i];
+		}
+	}
+	
+	// Gets the legal moves from a given square
+	function getlegalmoves(square)
+	{
+		movelist = [];	
+		
+		// If the square doesn't exist, it's not valid (duh)
+		if( square < 0 || square > 63 ) return;
+		
+		// If the square has a piece of the same color in it, it's not valid either!
+		var color = BoardColors[square];
+		if( color < 0 ) return;
+		var piece = BoardPieces[square];
+		if( piece < 1 ) return;
+		
+		var row = Math.floor( square / 8 );
+		var col = square % 8;
+		
+		var Sq = row * 8 + col;
+		var f = col;
+		var r = row;
+		var ii;
+		
+		
+		if( square < 0 || square > 63 ) return;
+		
+		// Black Pieces
+		if(color == 1)
+		{
+			// Down-left movement
+			if(BoardColors[square+7] == -1)
+			{
+				movelist.push(square+7);
+			}
+			// Down-right movement
+			if(BoardColors[square+9] == -1)
+			{
+				movelist.push(square+9);
+			}
+			// Skip down-left
+			if(col > 0 && BoardColors[square + 7] == color ^ 1)
+			{
+				movelist.push(square+14)
+				//somehow prompt for removal of piece?
+			}
+			// Skip down-right
+			if(col < 7 && BoardColors[square + 9] == color ^ 1)
+			{
+				movelist.push(square+18);
+				//somehow prompt for removal of piece?
+			}
+		}
+		// Red pieces
+		else if(color == 0)
+		{
+			// Up-right movement
+			if(BoardColors[square-7] == -1)
+			{
+				movelist.push(square-7);
+			}
+			// Up-left movement
+			if(BoardColors[square-9] == -1)
+			{
+				movelist.push(square-9);
+			}
+			// Skip up-right
+			if(col > 0 && BoardColors[square - 7] == color ^ 1)
+			{
+				movelist.push(square-14)
+				//somehow prompt for removal of piece?
+			}
+			// Skip up-right
+			if(col < 7 && BoardColors[square - 9] == color ^ 1)
+			{
+				movelist.push(square-18);
+				//somehow prompt for removal of piece?
+			}
+		}
+	}
+		
+	// It's that thing that all workers need to have!
+	self.onmessage = function(e) 
+	{
+		if( e.data.type == 'init' )
+		{
+			initGame();
+		}
+		else if( e.data.type == 'getlegalmoves' )
+		{
+			getlegalmoves(e.data.square);
+			self.postMessage({'type':'getlegalmoves','movelist':movelist});
+		}
+		else if( e.data.type == 'movepiece' )
+		{
+			var src = e.data.src;
+			var dst = e.data.dst;
+			
+			BoardColors[dst] = BoardColors[src];
+			BoardColors[src] = -1;
+			BoardPieces[dst] = BoardPieces[src];
+			BoardPieces[src] = 0;
+		}
+	}
+</script>
+<!-- WEBWORKER SCRIPT ENDS HERE -->
+
+</head>
+
+<body>
+
+<!-- CHECKERS SCRIPT BEGINS HERE -->
+<script>
+	var renderer;
+	var scene;
+	var camera;
+	var plane;
+	
+	var objects = [];
+	var squaretiles = [];
+	var movelist = [];
+	var worker;
+	
+	//keyboard = new THREEx.KeyboardState();
+
+	var raycaster = new THREE.Raycaster();
+	var mouse = new THREE.Vector2();
+	var selectedobject = null;
+	var offset = new THREE.Vector3();
+	
+	// A list for all of the pieces that will be on the board
+	var PieceList = [null, null, null, null,
+					null, null, null, null,
+				  null, null, null, null,
+				    null, null, null, null,
+				  null, null, null, null,
+				    null, null, null, null];
+			
+	var explode, one, two, bgm;
+	
+	// The plan was for sound 1 to play on pickup, and sound 2 to play on drop, but since those movements aren't working, 
+    // they aren't implemented. Explosions would notify of captures.	
+	function loadSounds()
+	{
+		one = new Audio("sounds/1.mp3");
+		two = new Audio("sounds/2.mp3");
+		bgm = new Audio("sounds/bgm.mp3");
+	}
+	
+	// Initializes the game board
+	function init()
+	{
+		// Grabs the height and width of the window (this will be important!)
+		var w = window.innerWidth;
+		var h = window.innerHeight;
+		
+		// Loads the (as of right now) unused sounds
+		loadSounds();
+		
+		// Creates the scene for the board game
+		scene = new THREE.Scene();
+	
+		// Creates a camera
+		camera = new THREE.PerspectiveCamera( 45, w / h, 0.1, 3000 );
+		
+		// Sets it overhead where our board will soon reside
+		camera.position.x = 0;
+		camera.position.y = 0;
+		camera.position.z = 300;
+		camera.lookAt( scene.position );
+		
+		// Creates a new THREE.js WebGL renderer
+		renderer = new THREE.WebGLRenderer();
+		renderer.setClearColor( 0x000000, 1.0 );
+		renderer.setSize( w, h );
+		renderer.shadowMap.enabled = true;
+		
+		// Calls to create the board and place the pieces
+		createCheckerBoard();
+		generatePieces();
+
+        // Adds a new spotlight for shadows!
+        var spotLight = new THREE.SpotLight( 0xffffff );
+        spotLight.position.set( 0, 0, 500 );
+        spotLight.shadowCameraNear = 20;
+        spotLight.shadowCameraFar = 1500;
+        spotLight.castShadow = true;
+        scene.add(spotLight);
+		
+		// Creates a new plane a position z
+		plane = new THREE.Mesh(new THREE.PlaneBufferGeometry(24*8, 24*8, 8, 8), new THREE.MeshBasicMaterial({transparent: true, color: 0x0000ff,opacity: 0.0}));
+		plane.position.z = .5;
+		plane.name = "Plane";
+		scene.add( plane );
+
+		// Appends the renderer to the document ( our html page )
+		document.body.appendChild( renderer.domElement );		
+		
+		// And adds the event listeners to it
+		renderer.domElement.addEventListener( 'mousemove', onDocumentMouseMove, false );
+		renderer.domElement.addEventListener( 'mousedown', onDocumentMouseDown, false );
+		renderer.domElement.addEventListener( 'mouseup', onDocumentMouseUp, false );
+		
+		// Worker creation
+		var blob = new Blob([document.getElementById('worker').textContent]); 
+		worker = new Worker( window.webkitURL.createObjectURL( blob ) ); 
+		worker.postMessage({'type':'init'});
+		worker.onmessage = function(e) 
+		{
+		}		
+		
+		// And render everything!
+		render();
+		startbgm();
+	}
+	
+	// Plays the background music
+	function startbgm()
+	{
+		bgm.play();
+	}
+	
+	var Colors = ['white','black'];
+	
+	// Creates an 8x8 checkerboard
+	function createCheckerBoard()
+	{
+		// Sets the size of each checkerboard square
+		var SquareWidth = 24, SquareHeight = 24;
+		
+		// Load the two textures.
+		var DarkTexture = THREE.ImageUtils.loadTexture('images/DarkSquare.png');
+		var LightTexture = THREE.ImageUtils.loadTexture('images/LightSquare.png');
+		
+		// Creates the actual square geometry proper
+		var SquareGeo = new THREE.BoxGeometry( SquareWidth, SquareHeight, 1 );
+
+		// Uses loops to create the board
+		for( var row=0; row<8; row++ )
+		{
+			// Alternates the row's pattern
+			var alternate = row & 1;
+			
+			// Iterates through each column
+			for( var col=0; col<8; col++ )
+			{
+				// Var to hold our soon to be created mesh
+				var mesh;
+				
+				// On 0s, create light squares
+				if( alternate == 0 )
+				{
+					var LightSquareMat = new THREE.MeshLambertMaterial({map:LightTexture});
+					mesh = new THREE.Mesh( SquareGeo, LightSquareMat );
+				}
+				// On 1s, create dark squares
+				else
+				{
+					var DarkSquareMat = new THREE.MeshLambertMaterial({map:DarkTexture});
+					mesh = new THREE.Mesh( SquareGeo, DarkSquareMat );
+				}
+				
+				// Change the value of alternate
+				alternate ^= 1;
+				
+				// And align the mesh
+				mesh.position.x = -( SquareWidth * 3.5 ) + col * SquareWidth;
+				mesh.position.y = -( SquareHeight * 3.5 ) + row * SquareHeight;
+				
+				// Name the mesh, and add the square to the scene
+				mesh.name = "Row" + row + "-Col" + col + "-Color" + Colors[alternate];
+				squaretiles.push( mesh );
+				scene.add( mesh );
+			}
+		}
+		
+	}
+
+	var piecesLoaded = false;
+	
+	// A function that makes sure the pieces have loaded before starting everything up to avoid WEIRD ERRORS
+	function waitForPiecesToLoad()
+	{
+		// Innocent until proven guilty
+		var allloaded = true;
+		
+		// If anything in the list of pieces is null, then not everything has been loaded (oh no!)
+		for( var i=0; i<24; i++ )
+		{
+			if( PieceList[i] == null )
+			{
+				allloaded = false;
+				break;
+			}
+		}
+		// If they're not loaded, then we wait
+		if( !allloaded )
+		{
+			setTimeout(waitForPiecesToLoad, 500);
+		}
+		// Otherwise, slam those pieces on the board!
+		else
+		{
+			piecesLoaded = true;
+			placePieces();
+		}
+		
+		// SLAM THEM ON THE BOARD I SAID
+		placePieces();
+	}
+	
+	// To be frank, I feel very clever about all of this part 
+	function placePieces()
+	{
+		var col = 0;
+		var row = 7;
+		var pieceAdded = -1;
+		
+		// Iterates through rows
+		for(var i = 0; i < 8; i++)
+		{
+			if(row != 3 && row != 4)
+			{
+				// So I'm very clever. If the row is odd, then it has a particular configuration [empty, piece, empty, piece, etc.]
+				if(row % 2 == 1)
+				{
+					// Iterates through each column
+					for (col = 0; col < 8; col+= 2)
+					{
+						// Increment the number of pieces added
+						pieceAdded++;
+						
+						// And add the piece to the list of pieces with its new location
+						PieceList[pieceAdded].position.x = -24 * 3 + (col) * 24 - 12;
+						PieceList[pieceAdded].position.y = -24 * 3 - 12 + (row) * 24;
+						
+						// If the row is < 4, then the piece is black. Name it as such.
+						if(row < 4)
+						{
+							PieceList[pieceAdded].name = "Piece-Black";
+						}
+						// Otherwise its red, and we name it as such.
+						else
+						{
+							PieceList[pieceAdded].name = "Piece-Red";
+						}
+						
+						// Finally, we add the piece to the scene
+						scene.add( PieceList[pieceAdded] );
+					}
+				}
+				// If the row is even, then it has a particular configuration [piece, empty, piece, empty, etc.]
+				else if(row % 2 == 0)
+				{
+					// Iterates through each column
+					for (col = 1; col < 8; col+= 2)
+					{
+						// Increment the number of pieces added
+						pieceAdded++;
+						
+						// And add the piece to the list of pieces with its new location
+						PieceList[pieceAdded].position.x = -24 * 3 + (col) * 24 - 12;
+						PieceList[pieceAdded].position.y = -24 * 3 - 12 + (row) * 24;
+						
+						// If the row is < 4, then the piece is black. Name it as such.
+						if(row < 4)
+						{
+							PieceList[pieceAdded].name = "Piece-Black";
+						}
+						// Otherwise its red, and we name it as such.
+						else
+						{
+							PieceList[pieceAdded].name = "Piece-Red";
+						}
+						
+						// Finally, we add the piece to the scene
+						scene.add( PieceList[pieceAdded] );
+					}
+				}
+			}
+			
+			row--;
+		}
+		
+	}
+	
+	// Generates the piece
+	function generatePieces()
+	{
+		for(var i = 0; i < 24; i++)
+		{
+			loadPiece('', i);
+			loadPiece('_red', i+12);
+		}
+		
+		setTimeout(waitForPiecesToLoad, 500);
+	}
+	
+	// Loading stuff!
+	function loadPiece(white,index)
+	{
+		var loader = new THREE.OBJMTLLoader();
+		if(index < 12)
+		{
+			loader.load('models/checker.obj', 'models/checker.mtl',
+				function ( object )
+				{
+					object.castShadow = true;
+					object.receiveShadow = true;
+					object.scale.set(.3, .3, .3);
+					
+					var obj = new THREE.Object3D();
+					obj.name = 'Piece';
+					object.parent = obj;
+					obj.add(object);
+					objects.push(obj);
+					PieceList[index] = obj;
+				});
+		}
+		else
+		{
+			loader.load('models/checker_red.obj', 'models/checker_red.mtl',
+				function ( object )
+				{
+					object.castShadow = true;
+					object.receiveShadow = true;
+					object.scale.set(.3, .3, .3);
+					
+					var obj = new THREE.Object3D();
+					obj.name = 'Piece';
+					object.parent = obj;
+					obj.add(object);
+					objects.push(obj);
+					PieceList[index] = obj;
+				});
+		}
+	}
+	
+	// Render stuff! 
+	function render()
+	{
+		requestAnimationFrame( render );
+		renderer.render( scene, camera );
+	}
+
+	// When the mouse moves
+	function onDocumentMouseMove( event ) 
+	{
+		// Get the relative position of the mouse within the window and client
+		mouse.x = ( event.clientX / window.innerWidth ) * 2 - 1;
+		mouse.y = -( event.clientY / window.innerHeight ) * 2 + 1;
+		
+		// If the object (in this case being dragged) is not null
+		if( selectedobject != null )
+		{
+			// Create a new vector with the mouse location
+			var vector = new THREE.Vector3( mouse.x, mouse.y, 1 );
+			vector.unproject( camera );
+
+			// Set the raycaster for it
+			raycaster.set( camera.position, vector.sub( camera.position ).normalize() );
+			
+			// And determine if the object is over a square by looking for an intersection of the raycaster
+			var intersects = raycaster.intersectObject( plane );
+			selectedobject.position.copy( intersects[0].point );
+		}
+
+	}
+
+	// Pick up the piece when the mouse button is clicked
+	var startingsquare;
+	var square = -1;
+	function onDocumentMouseDown( event ) 
+	{
+		event.preventDefault();
+		
+		// Creates a new vector holding the cursor's location
+		var vector = new THREE.Vector3( mouse.x, mouse.y, 1 );
+		vector.unproject( camera );
+
+		// Sets the raycaster
+		raycaster.set( camera.position, vector.sub( camera.position ).normalize() );
+		
+		var intersects = raycaster.intersectObjects( scene.children, true );
+		
+		// If the raycaster intersects a square at some point, then we can proceed
+		if ( intersects.length > 0 ) 
+		{
+			square = -1;
+			movelist = [];
+			
+			// We first look for a square
+			for( var i=0; i<intersects.length; i++ )
+			{
+				intersects[i].object;
+				var name = intersects[i].object.name;
+				
+				// If the name has -Color at some point in it
+				if( name.indexOf( "-Color" ) >= 0 )
+				{
+					// then get the row and column from the name
+					var row = name.substring( 3, 4 );
+					var col = name.substring( 8, 9 );
+					
+					// by parsing it into an int
+					square = parseInt( row ) * 8 + parseInt( col );
+					break;
+				}
+			}
+		
+		//
+			for( var i=0; i<intersects.length; i++ )
+			{
+				// Obj stores the object (or checker piece) the raycaster intersects
+				var obj = intersects[i].object;
+				var name = obj.name;
+				
+				// If the name is empty
+				if( name.length == 0 )
+				{
+					// Set the parent equal to the parent of obj
+					var par = obj.parent;
+					
+					// And give it its name
+					name = par.name;
+					
+					// If that name is blank too
+					if( name == '' )
+					{
+						// Get the next parent
+						par = par.parent;
+						name = par.name;
+						obj = par;
+					}
+					// Otherwise, set obj to the parent
+					else
+					{
+						obj = par;
+					}
+				}
+				// If piece is somewhere in the name
+				if( name.indexOf( "Piece" ) >= 0 )
+				{
+					// Set obj as the selected object
+					selectedobject = obj;
+					
+					// And tell the worker to get some valid moves because we're about to move a piece!
+					worker.postMessage({'type':'getlegalmoves','square':square});
+					break;
+				}
+			}
+		}
+	}
+	
+	// This functions snaps a piece to the given square, centering it and ensuring it looks nice
+	function SnapSelectedPieceToSquare( square3 )
+	{
+		// If the object is null, do nothing, because reasons
+		if( selectedobject == null ) return;
+		
+		// Otherwise grab the row and column of the given square
+		var row = Math.floor( square3 / 8 );
+		var col = square3 % 8;
+		
+		// And place the current object at those squares
+		selectedobject.position.x = -24 * 3 + col * 24 - 12;
+		selectedobject.position.y = -24 * 3 - 12 + row * 24;
+	}
+	
+	// D-D-D-DROP THE PIECE
+	function onDocumentMouseUp( event ) 
+	{
+		event.preventDefault();
+
+		// First, look for a square.
+		var intersects = raycaster.intersectObjects( scene.children, true );
+		
+		// If it intersects
+		if ( intersects.length > 0 ) 
+		{
+			// Then create a new square var
+			var square2 = -1;
+			
+			// And iterate through the list of intersections
+			for( var i=0; i<intersects.length; i++ )
+			{
+				// Get the first item
+				intersects[i].object;
+				
+				// And take its name
+				var name = intersects[i].object.name;
+				
+				// If -Color is found
+				if( name.indexOf( "-Color" ) >= 0 )
+				{
+					// Grab its row and column
+					var row = name.substring( 3, 4 );
+					var col = name.substring( 8, 9 );
+					
+					// And store them in the new square
+					square2 = parseInt( row ) * 8 + parseInt( col );
+					break;
+				}
+			}
+		}
+		
+		// Now we check for legal move making
+		var legalmovemade = false;
+		for( var i=0; i<movelist.length; i++ )
+		{
+			if( movelist[i] == square2 )
+			{
+				// A legal move was made.
+				legalmovemade = true;
+				
+				// Snap the piece to the raycast-determined square
+				SnapSelectedPieceToSquare( square2 );
+				worker.postMessage({'type':'movepiece','src':square,'dst':square2});
+				
+				// And remove the piece at the destination. 
+				removeDestPiece( selectedobject.id );
+			}
+		}
+		
+		// If it was an illegal move, snap the piece back to its origin
+		if( !legalmovemade )
+		{
+			SnapSelectedPieceToSquare( square );
+		}
+		
+		selectedobject = null;
+		for( var i=0; i<64; i++ )
+		{
+			squaretiles[i].material.color.set( 0xffffff );
+		}
+	}
+	
+	window.onload = init;
+</script>
+<!-- CHECKERS SCRIPT ENDS HERE -->
+
+</body>
+
+</html>
